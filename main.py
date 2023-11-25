@@ -202,8 +202,7 @@ def main(args):
 
     cudnn.benchmark = True
 
-    if args.train:
-        dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
+    dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:
