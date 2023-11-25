@@ -31,9 +31,7 @@ import models_mae
 import caformer
 import DiffRate
 
-
 warnings.filterwarnings('ignore')
-
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Diffrate training and evaluation script', add_help=False)
@@ -145,6 +143,8 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data-path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
+    parser.add_argument('--nb_classes', default=1000, type=int,
+                        help='num class')
     parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19'],
                         type=str, help='Image Net dataset path')
     parser.add_argument('--inat-category', default='name',
@@ -161,6 +161,7 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
+    parser.add_argument('--train', action='store_true', help='Perform training only')
     parser.add_argument('--dist-eval', action='store_true', default=True, help='Enabling distributed evaluation')
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--pin-mem', action='store_true',
@@ -178,7 +179,7 @@ def get_args_parser():
 
     parser.add_argument('--target_flops', type=float, default=3.0)
     parser.add_argument('--granularity', type=int, default=4, help='the token number gap between each compression rate candidate')
-    parser.add_argument('--load_compression_rate', action='store_true', help='eval by exiting compression rate in compression_rate.json')
+    parser.add_argument('--load_compression_rate', default="compression_rate.json", type=str, action='store_true', help='eval by exiting compression rate in compression_rate.json')
     parser.add_argument('--warmup_compression_rate', action='store_true', default=False, help='inactive computational constraint in first epoch')
     return parser
 
@@ -201,7 +202,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
+    if args.train:
+        dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:
@@ -225,18 +227,20 @@ def main(args):
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        if args.train:
+            sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
     # leveraging MultiEpochsDataLoader for faster data loading
-    data_loader_train = MultiEpochsDataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-        
-    )
+    if args.train:
+        data_loader_train = MultiEpochsDataLoader(
+            dataset_train, sampler=sampler_train,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=True,
+            
+        )
 
     data_loader_val = MultiEpochsDataLoader(
         dataset_val, sampler=sampler_val,
@@ -286,7 +290,7 @@ def main(args):
         'caformer_s36':'CAFormer-S36',
     }
     if args.load_compression_rate:
-        with open('compression_rate.json', 'r') as f:
+        with open(args.load_compression_rate, 'r') as f:
             compression_rate = json.load(f) 
             model_name = model_name_dict[args.model]
             if not str(args.target_flops) in compression_rate[model_name]:
@@ -295,10 +299,6 @@ def main(args):
             merge_kept_num = eval(compression_rate[model_name][str(args.target_flops)]['merge_kept_num'])
             model.set_kept_num(prune_kept_num, merge_kept_num)
             
-            
-        
-    
-
     if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -346,30 +346,6 @@ def main(args):
     linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
     args.lr = linear_scaled_lr
 
-
-    if args.eval:
-        test_stats = evaluate(data_loader_val, model, device,logger)
-        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        return
-    
-
-    optimizer = torch.optim.AdamW(model_without_ddp.arch_parameters(), lr=args.arch_lr,weight_decay=0)
-    loss_scaler = utils.NativeScalerWithGradNormCount()
-    lr_scheduler = CosineLRScheduler(optimizer, t_initial=args.epochs, lr_min=args.arch_min_lr, decay_rate=args.decay_rate )
-
-
-
-    criterion = LabelSmoothingCrossEntropy()
-
-    if mixup_active:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif args.smoothing:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-
-    
     if args.autoresume and os.path.exists(os.path.join(args.output_dir, 'checkpoint.pth')):
         args.resume = os.path.join(args.output_dir, 'checkpoint.pth')
     if args.resume:
@@ -386,7 +362,26 @@ def main(args):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
 
+    if args.eval:
+        test_stats = evaluate(data_loader_val, model, device,logger)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        return
+    
 
+    optimizer = torch.optim.AdamW(model_without_ddp.arch_parameters(), lr=args.arch_lr,weight_decay=0)
+    loss_scaler = utils.NativeScalerWithGradNormCount()
+    lr_scheduler = CosineLRScheduler(optimizer, t_initial=args.epochs, lr_min=args.arch_min_lr, decay_rate=args.decay_rate )
+
+    criterion = LabelSmoothingCrossEntropy()
+
+    if mixup_active:
+        # smoothing is handled with mixup label transform
+        criterion = SoftTargetCrossEntropy()
+    elif args.smoothing:
+        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
+        
     logger.info(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
