@@ -57,7 +57,7 @@ def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
 
     if args.data_set == 'CIFAR':
-        dataset = datasets.CIFAR100(args.data_path, train=is_train, transform=transform)
+        dataset = datasets.CIFAR100(args.data_path, train=is_train, transform=transform, download=True)
         nb_classes = 100
     elif args.data_set == 'IMNET':
         root = os.path.join(args.data_path, 'train' if is_train else 'val')
@@ -65,11 +65,11 @@ def build_dataset(is_train, args):
         nb_classes = 1000
     elif args.data_set == 'INAT':
         dataset = INatDataset(args.data_path, train=is_train, year=2018,
-                              category=args.inat_category, transform=transform)
+                              category=args.inat_category, transform=transform, download=True)
         nb_classes = dataset.nb_classes
     elif args.data_set == 'INAT19':
         dataset = INatDataset(args.data_path, train=is_train, year=2019,
-                              category=args.inat_category, transform=transform)
+                              category=args.inat_category, transform=transform, download=True)
         nb_classes = dataset.nb_classes
 
     return dataset, nb_classes
